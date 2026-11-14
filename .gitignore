@@ -1,0 +1,8 @@
+# Data files: re-created by notebook 01 from Kaggle
+Data/
+
+# Jupyter auto-saves
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
