@@ -1,131 +1,157 @@
-# Telecom-churn-data
-Business Problem Overview
+# Flight Price Prediction
 
-In the telecom industry, customers are able to choose from multiple service providers and actively switch from one operator to another. In this highly competitive market, the telecommunications industry experiences an average of 15-25% annual churn rate. Given the fact that it costs 5-10 times more to acquire a new customer than to retain an existing one, customer retention has now become even more important than customer acquisition.
+Predicting Indian domestic flight prices from airline, route, timing, stops, class and days left before departure, and answering plain-English questions about prices through a small local AI agent.
 
-For many incumbent operators, retaining high profitable customers is the number one business goal.
+**Model result:** A Random Forest predicts ticket prices with an average error of **₹1,090 (R² 0.985)**, about **4× better** than a Linear Regression baseline (₹4,501). On Economy tickets, the error is **11%** of the median fare, down from **48%**.
 
-To reduce customer churn, telecom companies need to predict which customers are at high risk of churn.
+**Agent result:** A tool-calling agent on a local 3B model (Qwen 2.5 via Ollama) answers questions such as *"cheapest flight from Chennai to Bangalore on the 25th"* using the trained model for every price. It passes **7/7** regression tests, including refusing requests the data can't support.
 
-In this project, you will analyse customer-level data of a leading telecom firm, build predictive models to identify customers at high risk of churn and identify the main indicators of churn.
+---
 
-Understanding and Defining Churn
+## Data
 
-There are two main models of payment in the telecom industry - postpaid (customers pay a monthly/annual bill after using the services) and prepaid (customers pay/recharge with a certain amount in advance and then use the services).
+[Flight Price Prediction](https://www.kaggle.com/datasets/shubhambathwal/flight-price-prediction) by Shubham Bathwal on Kaggle: 300,153 tickets between six Indian metro cities (Delhi, Mumbai, Bangalore, Kolkata, Hyderabad, Chennai).
 
-In the postpaid model, when customers want to switch to another operator, they usually inform the existing operator to terminate the services, and you directly know that this is an instance of churn.
+The first notebook downloads the data automatically with `kagglehub`.
 
-However, in the prepaid model, customers who want to switch to another network can simply stop using the services without any notice, and it is hard to know whether someone has actually churned or is simply not using the services temporarily (e.g. someone may be on a trip abroad for a month or two and then intend to resume using the services again).
+## Project structure
 
-Thus, churn prediction is usually more critical (and non-trivial) for prepaid customers, and the term ‘churn’ should be defined carefully. Also, prepaid is the most common model in India and southeast Asia, while postpaid is more common in Europe in North America.
+```
+flight-price-prediction/
+├── Notebooks/
+│   ├── 01_data_exploration.ipynb   # loading, health checks, cleaning, EDA
+│   └── 02_modelling.ipynb          # encoding, models, evaluation, question answering, agent
+├── Data/                           # created by notebook 01 (not tracked in Git)
+├── Models/                         # trained model, created by notebook 02 (not tracked in Git, ~86 MB)
+├── requirements.txt
+└── README.md
+```
 
-This project is based on the Indian and Southeast Asian market.
+## How to run
 
-Definitions of Churn
+```bash
+pip install -r requirements.txt
+```
 
-There are various ways to define churn, such as:
+The question-answering and agent sections also need [Ollama](https://ollama.com) running locally, with the model downloaded:
 
-Revenue-based churn: Customers who have not utilised any revenue-generating facilities such as mobile internet, outgoing calls, SMS etc. over a given period of time. One could also use aggregate metrics such as ‘customers who have generated less than INR 4 per month in total/average/median revenue’.
+```bash
+ollama pull qwen2.5:3b
+```
 
-The main shortcoming of this definition is that there are customers who only receive calls/SMSes from their wage-earning counterparts, i.e. they don’t generate revenue but use the services. For example, many users in rural areas only receive calls from their wage-earning siblings in urban areas.
+Then run the notebooks **in order**:
 
-Usage-based churn: Customers who have not done any usage, either incoming or outgoing - in terms of calls, internet etc. over a period of time.
+1. `01_data_exploration.ipynb` downloads the data, cleans it and saves `Data/flights_clean.csv`
+2. `02_modelling.ipynb` trains the models, saves the Random Forest to `Models/`, and builds the question-answering layer and the agent
 
-A potential shortcoming of this definition is that when the customer has stopped using the services for a while, it may be too late to take any corrective actions to retain them. For e.g., if you define churn based on a ‘two-months zero usage’ period, predicting churn could be useless since by that time the customer would have already switched to another operator.
+## Part 1: Price model
 
-In this project, you will use the usage-based definition to define churn.
+### Approach
 
-High-value Churn
+1. **Health checks:** no missing values and no duplicate rows. Dropped `Unnamed: 0` (a row counter) and `flight` (1,561 codes acting as IDs; the useful part is already in `airline`).
+2. **Exploratory analysis:** looked at how each feature relates to price, always splitting by class, because Business and Economy fares differ so much.
+3. **Encoding:** `stops` as an ordered number (0/1/2) because price rose steadily with each stop; `class` as 0/1; airline, cities and times as one-hot columns (first category dropped).
+4. **Train/test split:** 80/20, `random_state=42`.
+5. **Models:** Linear Regression as a baseline, then Random Forest (50 trees).
+6. **Evaluation:** MAE, RMSE and R², overall and **split by class**.
 
-In the Indian and the southeast Asian market, approximately 80% of revenue comes from the top 20% customers (called high-value customers). Thus, if we can reduce churn of the high-value customers, we will be able to reduce significant revenue leakage.
+### Key findings from exploration
 
-In this project, you will define high-value customers based on a certain metric (mentioned later below) and predict churn only on high-value customers.
+| Feature | Effect on price |
+|---|---|
+| Class | Business median ₹53,164 vs Economy ₹5,772 (about 9×) |
+| Days left | Economy fares jump sharply about 15 days before departure; day-1 fares are about 3× those booked 6–7 weeks ahead |
+| Airline | Only Vistara and Air India sell Business. In Economy, AirAsia is cheapest and Vistara the most expensive (about 2×) |
+| Stops | More stops goes with a higher price in both classes, contrary to my expectation |
+| Duration | One-stop flights take about 5× as long as non-stop (12.25 vs 2.25 hours), mostly layover |
+| Route | About 1.5× between cheapest and dearest Economy routes; price does not follow distance |
+| Departure / arrival time | Weak effect; arrival time matters more than departure, mainly in Business |
 
-Understanding the Business Objective and the Data
+### Results
 
-The dataset contains customer-level information for a span of four consecutive months - June, July, August and September. The months are encoded as 6, 7, 8 and 9, respectively.
+| Model | MAE | RMSE | R² | Negative predictions |
+|---|---|---|---|---|
+| Linear Regression | ₹4,501 | ₹6,815 | 0.910 | 2,629 |
+| **Random Forest** | **₹1,090** | **₹2,811** | **0.985** | **0** |
 
-The business objective is to predict the churn in the last (i.e. the ninth) month using the data (features) from the first three months. To do this task well, understanding the typical customer behaviour during churn will be helpful.
+**Error by class (MAE as % of median fare):**
 
-Understanding Customer Behaviour During Churn
+| Class | Linear Regression | Random Forest |
+|---|---|---|
+| Economy | 48% | 11% |
+| Business | 16% | 4% |
 
-Customers usually do not decide to switch to another competitor instantly, but rather over a period of time (this is especially applicable to high-value customers). In churn prediction, we assume that there are three phases of customer lifecycle :
+**Why the linear model fell short.** Its R² of 0.910 looks strong, but it comes mostly from separating Economy and Business. Split by class, Economy errors were about half the fare, and every negative prediction was an Economy ticket. A linear model has one weight per feature, shared by both classes, so it can't learn that a stop adds about ₹2,400 in Economy but about ₹26,700 in Business, or the stepped days-left pattern. Decision trees branch on class first and learn separate rules for each, and their predictions are averages of real prices, so they can't go negative.
 
-The ‘good’ phase: In this phase, the customer is happy with the service and behaves as usual.
+**What the Random Forest relied on.** `class` dominates feature importance (0.880), followed by `duration` (0.059) and `days_left` (0.019). `stops` doesn't reach the top 10, likely because `duration` already carries that information.
 
-The ‘action’ phase: The customer experience starts to sore in this phase, for e.g. he/she gets a compelling offer from a competitor, faces unjust charges, becomes unhappy with service quality etc. In this phase, the customer usually shows different behaviour than the ‘good’ months. Also, it is crucial to identify high-churn-risk customers in this phase, since some corrective actions can be taken at this point (such as matching the competitor’s offer/improving the service quality etc.)
+## Part 2: Asking questions in plain English
 
-The ‘churn’ phase: In this phase, the customer is said to have churned. You define churn based on this phase. Also, it is important to note that at the time of prediction (i.e. the action months), this data is not available to you for prediction. Thus, after tagging churn as 1/0 based on this phase, you discard all data corresponding to this phase.
+The model only understands 29 numeric columns, so a layer on top turns a question into those inputs:
 
-In this case, since you are working over a four-month window, the first two months are the ‘good’ phase, the third month is the ‘action’ phase, while the fourth month is the ‘churn’ phase.
+1. **`predict_price()`** fills in the 29-column format for one flight. Sanity check: Vistara, Delhi → Mumbai, Economy, non-stop, 5 days out predicts ₹6,082 vs a median of ₹5,955 across 15 real tickets.
+2. **`quote_price()`** fills in details the person didn't give (airline, stops, time slots) with the most common option on that route, and the reply always states these assumptions.
+3. **Reading the question**, in two versions:
+   - **Rules** (`parse_question`): fast and exact for phrasing they know ("in two weeks", "Friday", "Bombay"), useless for anything else
+   - **Local LLM with guardrails** (`llm_parse_question`): understands more phrasing (e.g. "on the 25th"), while rules count dates and overrule anything the question never mentioned. Example: the LLM turned "Madras" into Mumbai; the city guardrail corrected it to Chennai.
 
-Data Dictionary
+## Part 3: The agent
 
-The dataset can be download using this link. The data dictionary is provided in the Data_Dictionary folder.
+Instead of fixed steps, the LLM **decides which tool to call**, reads the result, and repeats until it can answer.
 
-The data dictionary contains meanings of abbreviations. Some frequent ones are loc (local), IC (incoming), OG (outgoing), T2T (telecom operator to telecom operator), T2O (telecom operator to another operator), RECH (recharge) etc.
+```
+Question → LLM chooses a tool → Python runs it → result goes back to the LLM → ... → answer
+```
 
-The attributes containing 6, 7, 8, 9 as suffixes imply that those correspond to the months 6, 7, 8, 9 respectively.
+**Tools**
 
-Data Preparation
+| Tool | Job |
+|---|---|
+| `get_price` | Price one flight, using the Random Forest |
+| `compare_options` | Price every airline and stops option on a route, return the cheapest or most expensive |
+| `days_until` | Turn a calendar date or weekday into days from today |
 
-The following data preparation steps are crucial for this problem:
+**Design principle: the LLM handles language, the model handles numbers, and Python checks the LLM.** With a 3B model, reliability came from guardrails and well-designed tools rather than from the model itself:
 
-Derive new features
-This is one of the most important parts of data preparation since good features are often the differentiators between good and bad models. Use your business understanding to derive features you think could be important indicators of churn.
+- **Python decides any input it can read reliably** from the question (number of days, cities, class, cheapest vs most expensive). The LLM's values are only used where Python finds nothing, such as a misspelled "banglore".
+- **Complex steps live inside tools.** Asking the 3B model to list 14 options and price each one failed; a single `compare_options` tool fixed it.
+- **The loop sends the agent back** if it skips a required step (e.g. answers "cheapest" without comparing options), at most twice, with a step limit.
+- **Every ₹ amount in the final answer must appear in a tool result**; otherwise the tool's own result is returned instead.
 
-Filter high-value customers
-As mentioned above, you need to predict churn only for the high-value customers. Define high-value customers as follows: Those who have recharged with an amount more than or equal to X, where X is the 70th percentile of the average recharge amount in the first two months (the good phase).
+**Example**
 
-After filtering the high-value customers, you should get about 29.9k rows.
+> **Q:** i want to know the cheapest flight from chennai to banglore on 25th Nov
+> **A:** The cheapest flight from Chennai to Bangalore on the 25th of November is ₹3,361 with SpiceJet, a non-stop flight in Economy class.
 
-Tag churners and remove attributes of the churn phase
-Now tag the churned customers (churn=1, else 0) based on the fourth month as follows: Those who have not made any calls (either incoming or outgoing) AND have not used mobile internet even once in the churn phase. The attributes you need to use to tag churners are:
+Before the guardrails, the same question was priced 25 days ahead instead of 7, and labelled "cheapest" without comparing anything: a confident, wrong ₹5,569.
 
-total_ic_mou_9
+### Regression tests
 
-total_og_mou_9
+The notebook ends with automated tests. Expected prices were verified directly against the tools; for impossible requests the test checks that no price is invented.
 
-vol_2g_mb_9
+| Question | Expected | Result |
+|---|---|---|
+| Delhi → Mumbai in 5 days | ₹9,062 | ✅ |
+| Cheapest Chennai → Hyderabad in 14 days | ₹4,204 | ✅ |
+| Most expensive Delhi → Kolkata in 10 days | ₹18,801 | ✅ |
+| Cheapest Chennai → "banglore" on 25th Nov | worked out from the tool on the day | ✅ |
+| Business class on IndiGo | no price (IndiGo sells no Business) | ✅ |
+| Delhi → Goa | no price (Goa not in the data) | ✅ |
+| Delhi → Mumbai, no date | asks for the date | ✅ |
 
-vol_3g_mb_9
+The first full run passed only 3 of 7, even though each question had looked fine when tried on its own. Fixing what the tests exposed took it to 6/7, then 7/7.
 
-After tagging churners, remove all the attributes corresponding to the churn phase (all attributes having ‘ _9’, etc. in their names).
+## Limitations
 
-Modelling
+- **Model:** train MAE (₹425) is lower than test MAE (₹1,090): the forest fits its training data closely, though it still generalises well. Only 0.74% of tickets are over 30 hours long, so very long journeys are less reliable. The data covers six metro cities and 1–49 days ahead only.
+- **Defaults matter:** when airline or stops aren't given, the most common option on the route is assumed, which can double the price compared with a non-stop flight. Replies state these assumptions.
+- **Agent:** the 3B model often calls `get_price` first and needs a guardrail reminder to compare options. For "is ₹9,000 a good price?" it calls the right tool but reasons weakly about the comparison.
+- **Dates:** `days_until` uses the day number only, not the month, so "25th Nov" means "the next 25th". Vague phrases such as "end of next week" are read as 7 days.
+- **Final wording** is written by the LLM and can be loose (e.g. "two stops" for "two or more").
 
-Build models to predict churn. The predictive model that you’re going to build will serve two purposes:
+## Next steps
 
-It will be used to predict whether a high-value customer will churn or not, in near future (i.e. churn phase). By knowing this, the company can take action steps such as providing special plans, discounts on recharge etc.
-
-It will be used to identify important variables that are strong predictors of churn. These variables may also indicate why customers choose to switch to other networks.
-
-In some cases, both of the above-stated goals can be achieved by a single machine learning model. But here, you have a large number of attributes, and thus you should try using a dimensionality reduction technique such as PCA and then build a predictive model. After PCA, you can use any classification model.
-
-Also, since the rate of churn is typically low (about 5-10%, this is called class-imbalance) - try using techniques to handle class imbalance.
-
-You can take the following suggestive steps to build the model:
-
-Preprocess data (convert columns to appropriate formats, handle missing values, etc.)
-
-Conduct appropriate exploratory analysis to extract useful insights (whether directly useful for business or for eventual modelling/feature engineering).
-
-Derive new features.
-
-Reduce the number of variables using PCA.
-
-Train a variety of models, tune model hyperparameters, etc. (handle class imbalance using appropriate techniques).
-
-Evaluate the models using appropriate evaluation metrics. Note that is is more important to identify churners than the non-churners accurately - choose an appropriate evaluation metric which reflects this business goal.
-
-Finally, choose a model based on some evaluation metric.
-
-The above model will only be able to achieve one of the two goals - to predict customers who will churn. You can’t use the above model to identify the important features for churn. That’s because PCA usually creates components which are not easy to interpret.
-
-Therefore, build another model with the main objective of identifying important predictor attributes which help the business understand indicators of churn. A good choice to identify important variables is a logistic regression model or a model from the tree family. In case of logistic regression, make sure to handle multi-collinearity.
-
-After identifying important predictors, display them visually - you can use plots, summary tables etc. - whatever you think best conveys the importance of features.
-
-Finally, recommend strategies to manage customer churn based on your observations.
-
-Note: Everything has to be submitted in one Jupyter notebook.
+- A price-range tool so the agent can judge whether a given price is good
+- Tune the Random Forest (e.g. `min_samples_leaf`) and use cross-validation; try gradient boosting
+- Try a larger local model and measure how many guardrails it still needs
+- A small web app (e.g. Streamlit) for the chat
