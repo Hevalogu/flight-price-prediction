@@ -6,3 +6,6 @@ Data/
 
 # Python cache
 __pycache__/
+
+# Trained model (86 MB): re-created by notebook 02
+Models/
